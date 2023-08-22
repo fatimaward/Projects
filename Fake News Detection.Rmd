@@ -1,0 +1,173 @@
+---
+title: "Fake News Detection"
+author: "Fatima Wardani"
+date: "2023-07-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+r = getOption("repos")
+r["CRAN"] = "http://cran.us.r-project.org"
+options(repos = r)
+remove.packages("rlang")
+remove.packages("dplyr")
+install.packages("rlang")
+install.packages("dplyr")
+library(rlang)
+install.packages("Matrix")
+library(Matrix)
+library(Rcpp)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(cluster)
+library(dbplyr)
+library(plyr)
+```
+
+```{r}
+arts<-read.csv("C:\Users\user\Desktop\facebook-fact-check.csv")
+```
+```{r}
+View(arts)
+```
+```{r}
+dim(arts)
+```
+```{r}
+ggplot(data=arts,aes(x=Rating))+geom_bar(fill="steelblue",color="black")+ggtitle("Histogram of Article Factuality Ratings")
+```
+```{r}
+#We can see that we have four different ratings, with the majority of the articles
+#being mostly true. No factual content signifies that the article could be anything.
+ggplot(data=arts,aes(x=share_count,y=comment_count,color=Rating))+geom_point()
+```
+```{r}
+#Looks like we have some missing values. Let us see what variables are lacking.
+sapply(arts,function(x) sum(is.na(x)))
+```
+```{r}
+#There are a lot of missing values in the share_count variable. Since shares are related to reactions and comments (they tend to grow exponentially), we can remove the column.
+arts<-subset(arts,select=-c(share_count))
+```
+```{r}
+#As for the other missing features, we can fill them in.
+missingr=which(is.na(arts$reaction_count))
+for (i in missingr){
+  arts$reaction_count=mean(arts$reaction_count,na.rm=T)}
+missingc=which(is.na(arts$comment_count))
+for (i in missingc){
+  arts$comment_count=mean(arts$comment_count,na.rm=T)}
+```
+```{r}
+sum(is.na(arts))
+```
+
+```{r}
+View(arts)
+```
+```{r}
+counts<-table(arts$Category)
+mosaicplot(counts,main="Presence of categories",col="blue")
+```
+```{r}
+#We see that the data is balanced. Let us see the classifications according to the category.
+mosaicplot(Rating~Category,data=arts,main="Rating by category")
+```
+```{r}
+#The data is quiet evenly distributed, except for the "mixture of true and false" and "mostly false" keeling in the right direction.
+```
+```{r}
+#Certain news publications tend to stick with the same narrative, but sometimes, they may have internal agendas that may have them take unpredictable stances. Let us engineer a feature that combines the date with the news site.
+dates<-ymd(arts$Date.Published)
+dates<-as.numeric(dates)
+arts$dates<-dates
+View(arts)
+```
+```{r}
+ggplot(data=arts,aes(x=Page,y=dates,fill=Rating))+geom_boxplot()+theme_gray(base_size=6)
+```
+```{r}
+#-We can see that at at certain point in time, most publication sites started publishing "no factual content." 
+#-ABC News Politics had been publishing articles that contained "a mixture of true and false" content in the beginning, similarly to Politico. It is likely that that it is because the news was not clear in the beginning.
+#-Occupy Democrats started midway through to publish mostly false articles in addition to their other articles.
+#-Right Wing News published mostly false articles throughout the entire duration of the study.
+```
+```{r}
+arts<-arts %>% mutate(value = 1)  %>% spread(Page, value,  fill = 0 ) 
+```
+```{r}
+#Now that we have encoded the source as a numerical variable, we have finished the first step towards engineering a joint feature between the page and the date. To differentiate between the sources, we can assign a different integer to them.
+for (k in 12:20){
+  arts[,k]=k*arts[,k]
+  }
+```
+```{r}
+#Now, multiplying with the date makes a difference according to the news site. It will show us the news site's stance depending on the time.
+arts<-arts %>% mutate(joint=rowSums(arts[,c(12:20)]))
+arts$joint<-arts$joint*arts$dates
+View(arts)
+```
+```{r}
+#We will perform hierarchical clustering. Of course, there are some useless variables, like the post  and account IDs.
+arts<-arts[-c(1,2)]
+#We can also get rid of the Post URL and the date published, because we have a "dates" variable that is numeric.
+arts<-arts[-c(2,3)]
+#We shall factorize all our categorical variables.
+arts$Category<-as.factor(arts$Category)
+arts$Post.Type<-as.factor(arts$Post.Type)
+arts$Rating<-as.factor(arts$Rating)
+arts$Debate<-as.factor(arts$Debate)
+#Calculating the distance matrix.
+dm<-daisy(arts,metric='gower')
+#Let us experiment with different types of clustering to see which is best.
+cluster<-hclust(dm,method='complete')
+plot(cluster,labels=FALSE)
+```
+```{r}
+cluster2<-hclust(dm,method='centroid')
+plot(cluster2,labels=FALSE)
+```
+```{r}
+cluster3<-hclust(dm,method='ward.D')
+plot(cluster3,labels=FALSE)
+```
+```{r}
+#The ward.D method looks more reasonable than the other two. The best number of clusters is defined as the largest vertical distance without a cutoff horizontal line, so around 4.
+plot(cluster3)
+rect.hclust(cluster3, k=4, border="red")
+```
+```{r}
+ourpicks<-cutree(cluster,k=4)
+arts<-cbind(arts,as.factor(ourpicks))
+View(arts)
+```
+```{r}
+#That's all well and good, but we need to see what those clusters mean for them to be of importance. We will look at the post type and the joint feature (time and news source) against the clusters to see if there is a correlation.
+ggplot(arts,aes(x=Post.Type,y=joint,color=as.factor(ourpicks)))+geom_jitter(width=.2)
+```
+```{r}
+#This is unclear. Let us try some different variables.
+ggplot(arts,aes(x=Category,fill=as.factor(ourpicks)))+geom_bar(position="stack")
+```
+```{r}
+#We can see that our clustering algorithm classified our data into the following:
+#- cluster 1 is the mainstream category
+#- cluster 2 and 4 both belong to the left
+#- cluster 3 represents news from the right
+#But what separates clusters 2 and 4?
+#Based on one of the graphs above, it is the joint variable.
+ggplot(arts,aes(x=Post.Type,y=joint,color=as.factor(ourpicks)))+geom_jitter(width=.2)
+```
+
